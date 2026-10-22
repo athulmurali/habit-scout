@@ -1,0 +1,6 @@
+#!/bin/sh
+# Resolve the repo through the ~/.local/bin symlink, then run the package with system python.
+SELF="$0"
+[ -L "$SELF" ] && SELF="$(readlink "$SELF")"
+DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+PYTHONPATH="$DIR" exec /usr/bin/python3 -m scout "$@"

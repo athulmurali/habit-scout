@@ -1,0 +1,75 @@
+# habit-scout
+
+A once-a-day background agent that watches how you work in VS Code (editor, integrated
+terminal, Claude Code sessions), finds the things you keep doing by hand, and proposes small
+automations: aliases, scripts, VS Code tasks/snippets, Claude slash commands. Nothing is
+installed until you say so.
+
+## How it stays cheap
+
+```
+ collect  ──►  mine  ──►  gate  ──►  LLM (1 call)  ──►  suggestions/  ──►  you: accept / reject
+ (local)      (local)    (local)    ≤ ~3k tokens         + report          (feedback → memory)
+```
+
+- **collect**: incremental readers for `~/.zsh_history`, the zsh hook log (`cwd`, exit code,
+  `TERM_PROGRAM=vscode`), VS Code's local file History + workspaces, and `~/.claude/projects`
+  session logs (your prompts, and shell commands Claude ran). Stored in `~/.habit-scout/scout.db`.
+- **mine**: normalizes commands (`git commit -m <str>`, `cd <path>`), counts repeated commands,
+  2–4 step command chains per session, clusters near-duplicate prompts, and spots repeatedly
+  created files of the same shape (template candidates). Zero tokens.
+- **gate** (the "wisdom" part):
+  - must recur on ≥3 distinct days, ≥4 times, and cost ≥2 minutes in the 14-day window
+  - skipped if one of your existing aliases already covers it
+  - never re-proposes rejected items (fuzzy-matched for prompts/sequences)
+  - unanswered suggestions expire to *ignored* and stay quiet for 45 days
+  - patterns the LLM declined are not re-sent for 21 days
+  - no LLM call at all when nothing is new, or when ≥5 suggestions await your decision
+- **LLM**: `claude -p` with a short custom system prompt, **no tools**, no MCP, no session
+  persistence, JSON-schema output. It is told silence is a valid answer and sees your past
+  accept/reject decisions (with reasons) so its bar adapts. Results under 0.6 confidence are
+  dropped; at most 3 per day. Typical run: ~2k tokens, ~$0.01.
+
+Secrets (tokens, keys, URL creds, emails, long blobs) are redacted before anything is sent.
+
+## Install
+
+```sh
+./install.sh        # symlinks `scout` into ~/.local/bin, adds a hook line to ~/.zshrc, loads LaunchAgent
+./uninstall.sh      # reverse it (add --purge to delete ~/.habit-scout)
+```
+
+The LaunchAgent wakes hourly; `scout run --scheduled` exits instantly unless it is past
+`run_after_hour` (18:00) and today's run hasn't happened, so a missed evening (laptop asleep)
+is caught on the next wake. If you switch Node versions with nvm, re-run `./install.sh` so the
+agent can find `claude`.
+
+## Use
+
+```sh
+scout candidates            # what the miner found & what would be sent (free)
+scout run --dry-run         # print the exact LLM payload, call nothing
+scout run                   # run now (the evening scheduled run still happens)
+scout list                  # pending suggestions
+scout show 3
+scout accept 3              # alias/function → ~/.habit-scout/aliases.zsh, script → ~/.local/bin,
+                            # claude_command → ~/.claude/commands; others print manual steps
+scout reject 3 -r "I already use ctrl-r for this"
+scout status                # runs, token spend, and whether accepted automations reduced the habit
+```
+
+Daily reports: `~/.habit-scout/reports/YYYY-MM-DD.md`. Logs: `~/.habit-scout/logs/scout.log`.
+
+## Config
+
+`~/.habit-scout/config.json` overrides any key in `scout/config.py`, e.g.
+
+```json
+{ "model": "haiku", "min_days": 4, "run_after_hour": 20 }
+```
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```

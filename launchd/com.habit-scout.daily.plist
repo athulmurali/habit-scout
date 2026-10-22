@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: install.sh fills __DIR__, __PATH__, __DATA__. Wakes hourly; `scout run --scheduled`
+     exits immediately unless it is past run_after_hour and today's run hasn't happened. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.habit-scout.daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__DIR__/bin/scout</string>
+    <string>run</string>
+    <string>--scheduled</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>__PATH__</string></dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__DATA__/logs/scout.log</string>
+  <key>StandardErrorPath</key><string>__DATA__/logs/scout.log</string>
+</dict>
+</plist>
