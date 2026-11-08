@@ -7,9 +7,16 @@ installed until you say so.
 
 ## How it stays cheap
 
-```
- collect  ──►  mine  ──►  gate  ──►  LLM (1 call)  ──►  suggestions/  ──►  you: accept / reject
- (local)      (local)    (local)    ≤ ~3k tokens         + report          (feedback → memory)
+```mermaid
+flowchart LR
+    A[collect<br/>local logs] --> B[mine<br/>local patterns]
+    B --> C{gate<br/>recurring? new?}
+    C -- no --> X[skip, 0 tokens]
+    C -- yes --> D[claude -p<br/>1 call, no tools]
+    D --> E[suggestions + report]
+    E --> F{you}
+    F -- accept --> G[install alias / script / command]
+    F -- reject --> H[remembered, never re-proposed]
 ```
 
 - **collect**: incremental readers for `~/.zsh_history`, the zsh hook log (`cwd`, exit code,
