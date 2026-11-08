@@ -73,3 +73,7 @@ Daily reports: `~/.habit-scout/reports/YYYY-MM-DD.md`. Logs: `~/.habit-scout/log
 ```sh
 python3 -m unittest discover -s tests
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
