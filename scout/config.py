@@ -26,6 +26,7 @@ DEFAULTS = {
     "min_count": 4,               # ...and at least this many times
     "min_minutes": 2.0,           # ...and plausibly cost this many minutes in the window
     "recent_days": 4,             # patterns not seen this recently are scored at half weight
+    "template_similarity": 0.5,   # share of tokens two command steps must share to be one template
     "max_candidates": 8,          # patterns sent to the LLM per run
     "max_pending": 5,             # skip the LLM while this many suggestions await a decision
 
@@ -73,6 +74,18 @@ DEFAULTS = {
         "top", "htop", "vim", "nvim", "nano", "source", "whoami", "date",
     ],
     "ignore_path_parts": ["node_modules", ".git", "dist", "build", ".next", "__pycache__"],
+    # different spellings of the same action, rewritten to one form before templates are mined
+    "command_synonyms": {
+        "git switch -c": "git checkout -b",
+        "git switch": "git checkout",
+        "git stage": "git add",
+        "yarn add": "npm install",
+        "pnpm add": "npm install",
+        "yarn run": "npm run",
+        "pnpm run": "npm run",
+    },
+    # flags that never change what a command does, ignored when comparing commands
+    "noise_flags": ["-q", "--quiet", "--silent", "--no-pager"],
 }
 
 

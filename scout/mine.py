@@ -3,6 +3,9 @@
 Pattern types:
   command   - the same (normalized) shell command typed again and again
   sequence  - the same 2-4 command chain repeated inside work sessions
+  template  - the same command *shape* with different arguments each time, e.g.
+              `git checkout -b <*> refs/tags/<*>`; found per step inside chains, after expanding
+              your aliases and mapping equivalent commands (config: command_synonyms)
   prompt    - near-duplicate prompts you keep giving Claude
   slash     - slash commands used often (signal of what already works)
   new_file  - new files of the same shape created repeatedly (template candidate)
@@ -40,6 +43,131 @@ def norm_cmd(cmd: str) -> str:
     for rx, repl in _NORM:
         s = rx.sub(repl, s)
     return s.strip()
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\b", re.S)
+_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||(?<!\$)\{|\})\s*")
+_REDIRECT = re.compile(r"^\d*(?:>>?|<)&?\S*$")
+_PLACEHOLDER = re.compile(r"^<[a-z*]+>$")
+WILD = "<*>"
+
+
+def read_aliases(cfg):
+    """name -> normalized expansion, from the user's alias files."""
+    out = {}
+    rx = re.compile(r"^\s*alias\s+([\w.-]+)=(['\"]?)(.*)\2\s*$")
+    for f in cfg["alias_files"]:
+        p = Path(f)
+        if not p.exists():
+            continue
+        for line in p.read_text(errors="replace").splitlines():
+            m = rx.match(line)
+            if m:
+                out[m.group(1)] = norm_cmd(m.group(3))
+    return out
+
+
+def segments(text, aliases=None, synonyms=None, noise=()):
+    """Split a (possibly chained, multi-line) command into normalized token lists, one per step.
+
+    Heredoc bodies and redirections are dropped, a leading alias is expanded, and equivalent
+    commands are rewritten to one canonical spelling so different ways of doing the same thing align.
+    """
+    aliases, synonyms = aliases or {}, sorted((synonyms or {}).items(), key=lambda kv: -len(kv[0]))
+    out = []
+    for line in _HEREDOC.sub(" <heredoc>", text).splitlines():
+        for seg in _SPLIT.split(norm_cmd(line)):
+            toks = [t for t in seg.split()
+                    if t not in noise and not (_REDIRECT.match(t) and not _PLACEHOLDER.match(t))]
+            if not toks:
+                continue
+            if toks[0] in aliases and aliases[toks[0]]:
+                toks = aliases[toks[0]].split() + toks[1:]
+            joined = " ".join(toks)
+            for src, dst in synonyms:
+                if joined == src or joined.startswith(src + " "):
+                    toks = (dst + joined[len(src):]).split()
+                    break
+            out.append(toks)
+    return out
+
+
+def _is_flag(t):
+    return t.startswith("-") and t != "-"
+
+
+def _fit(tpl, toks):
+    """Share of positions that agree; None if a flag differs (flags are structure, not arguments)."""
+    same = 0
+    for a, b in zip(tpl, toks):
+        if a == b:
+            same += 1
+        elif _is_flag(b) or (a != WILD and _is_flag(a)):
+            return None
+    return same / len(toks)
+
+
+def _templates(rows, trivial, cfg, aliases):
+    """Drain-style clustering of command steps: same tool, same flags, varying arguments."""
+    sim = cfg["template_similarity"]
+    synonyms, noise = cfg["command_synonyms"], set(cfg["noise_flags"])
+    groups, clusters, per_event = defaultdict(list), [], []
+    for r in rows:
+        hit = []
+        for toks in segments(r["text"], aliases, synonyms, noise):
+            if len(toks) < 3 or toks[0] in trivial or "<heredoc>" in toks:
+                continue  # inline scripts have no stable shape
+            best, score = None, 0.0
+            for c in groups[(toks[0], toks[1], len(toks))]:
+                f = _fit(c["tpl"], toks)
+                if f is not None and f > score:
+                    best, score = c, f
+            if best is None or score < sim:
+                best = {"tpl": list(toks), "items": [], "variants": Counter(), "via": Counter()}
+                groups[(toks[0], toks[1], len(toks))].append(best)
+                clusters.append(best)
+            else:
+                best["tpl"] = [a if a == b else WILD for a, b in zip(best["tpl"], toks)]
+            best["variants"][" ".join(toks)] += 1
+            if not any(h is best for h in hit):  # count each template once per command
+                hit.append(best)
+                best["items"].append((r["ts"], r["text"]))
+                best["via"][r["kind"]] += 1
+        per_event.append(hit)
+
+    def usable(c):
+        # `grep -i <*>` or `git show <*>` is just a tool taking an argument; a habit has more shape:
+        # at least 4 tokens, half of them fixed, and 2+ fixed words that are not flags
+        tpl = c["tpl"]
+        const = [t for t in tpl if t != WILD]
+        words = [t for t in const if not _is_flag(t)]
+        return (len(c["variants"]) >= 2 and WILD in tpl and len(tpl) >= 4
+                and len(const) >= len(tpl) / 2 and len(words) >= 2)
+
+    keep = [c for c in clusters if usable(c)]
+    together = defaultdict(Counter)  # template -> templates seen in the same command
+    for hit in per_event:
+        live = [c for c in hit if usable(c)]
+        for c in live:
+            for o in live:
+                if o is not c:
+                    together[id(c)][" ".join(o["tpl"])] += 1
+    out = []
+    for c in keep:
+        tpl = c["tpl"]
+        key = " ".join(tpl)
+        slots = []
+        for i, t in enumerate(tpl):
+            if t == WILD:
+                vals = Counter(v.split()[i] for v in c["variants"].elements())
+                slots.append([redact(v, 60) for v, _ in vals.most_common(4)])
+        sec = 3 + len(key) / 6 + 4 * len(slots)  # typing + working out the varying values
+        out.append(_pattern(
+            "template", key, c["items"], len(c["items"]) * sec / 60,
+            [f"{redact(v, 160)}  (x{n})" for v, n in c["variants"].most_common(3)],
+            via=c["via"].most_common(1)[0][0], variants=len(c["variants"]), slots=slots,
+            often_with=[k for k, n in together[id(c)].most_common(3) if n >= 2]))
+    return out
 
 
 def _fp(kind, key):
@@ -228,6 +356,7 @@ def mine(db, cfg) -> list:
     shellish = [r for r in rows if r["kind"] in ("shell", "agent_shell")]
     gap = cfg["session_gap_min"] * 60
     patterns = (_commands(shellish, trivial) + _sequences(shellish, trivial, gap) +
+                _templates(shellish, trivial, cfg, read_aliases(cfg)) +
                 _prompts(rows) + _slash(rows) + _new_files(rows, set(cfg["ignore_path_parts"])))
     now = int(time.time())
     db.execute("DELETE FROM patterns")

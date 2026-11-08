@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from .config import DATA_DIR
-from .mine import norm_cmd
+from .mine import read_aliases
 
 SYSTEM = """You are habit-scout, a frugal, skeptical automation advisor for one developer.
 You receive locally-mined usage patterns (shell commands, command sequences, repeated prompts
@@ -23,6 +23,10 @@ Principles:
 - Prefer the lightest mechanism that works: shell alias/function < small script < VS Code task or
   snippet < Claude slash command (for repeated prompts) < anything bigger.
 - Generalize: parameterize the varying parts you can see across the examples.
+- type=template means the same command shape recurring with different arguments: <*> marks a
+  varying slot, `slots` lists sample values per slot, `often_with` lists steps that usually run in
+  the same command. These are the strongest script/function candidates: take the slots as
+  parameters and fold the often_with steps into the same automation.
 - Learn from history: never re-propose something resembling a rejected item; if the developer
   ignores or rejects a kind of suggestion, raise your bar for that kind.
 - Scripts must be safe and idempotent: `set -euo pipefail` for bash, no destructive actions
@@ -83,7 +87,7 @@ def _suppressed(db, cfg, p):
     now = int(time.time())
     for r in rows:
         same = r["fp"] == p["fp"]
-        if not same and p["type"] in ("prompt", "sequence") and r["pattern_key"]:
+        if not same and p["type"] in ("prompt", "sequence", "template") and r["pattern_key"]:
             a, b = _words(p["key"]), _words(r["pattern_key"])
             same = bool(a | b) and len(a & b) / len(a | b) >= 0.6
         if not same:
@@ -95,21 +99,6 @@ def _suppressed(db, cfg, p):
         if r["status"] == "passed" and now - (r["status_ts"] or 0) < cfg["passed_cooldown_days"] * 86400:
             return True  # the LLM already judged it not worth it recently
     return False
-
-
-def existing_aliases(cfg):
-    """name -> normalized expansion, from the user's alias files."""
-    out = {}
-    rx = re.compile(r"^\s*alias\s+([\w.-]+)=(['\"]?)(.*)\2\s*$")
-    for f in cfg["alias_files"]:
-        p = Path(f)
-        if not p.exists():
-            continue
-        for line in p.read_text(errors="replace").splitlines():
-            m = rx.match(line)
-            if m:
-                out[m.group(1)] = norm_cmd(m.group(3))
-    return out
 
 
 def _covered_by_alias(p, aliases):
@@ -124,7 +113,7 @@ def _covered_by_alias(p, aliases):
 # ---------------------------------------------------------------- the gate
 
 def select_candidates(db, cfg, patterns):
-    aliases = existing_aliases(cfg)
+    aliases = read_aliases(cfg)
     recent = int(time.time()) - cfg["recent_days"] * 86400
     cands, notes = [], Counter()
     for p in patterns:
@@ -179,7 +168,8 @@ def _profile(db, cfg, patterns):
 
 
 def build_digest(db, cfg, cands, patterns):
-    slim = [{k: p[k] for k in ("fp", "type", "key", "count", "days", "minutes", "examples", "via", "steps", "workspace")
+    slim = [{k: p[k] for k in ("fp", "type", "key", "count", "days", "minutes", "examples", "via", "steps", "workspace",
+                                         "variants", "slots", "often_with")
              if k in p} for p in cands]
     digest = {"profile": _profile(db, cfg, patterns), "past_decisions": _history_summary(db), "candidates": slim}
     text = json.dumps(digest, separators=(",", ":"), ensure_ascii=False)

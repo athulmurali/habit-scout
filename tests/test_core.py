@@ -49,5 +49,32 @@ class SequenceTest(unittest.TestCase):
         self.assertNotIn("npm run lint ; npm test", keys)
 
 
+class TemplateTest(unittest.TestCase):
+    CFG = {"template_similarity": 0.5, "noise_flags": ["-q"],
+           "command_synonyms": {"git switch -c": "git checkout -b"}}
+
+    def _keys(self, cmds, aliases=None):
+        rows = [{"ts": 1_000_000 + i * 86400, "kind": "agent_shell", "text": c, "session": None}
+                for i, c in enumerate(cmds)]
+        return {p["key"]: p for p in mine._templates(rows, set(), self.CFG, aliases or {})}
+
+    def test_varying_arguments_collapse_into_one_template(self):
+        keys = self._keys([
+            "git checkout -q -b feature-login refs/tags/v1-alpha && python3 - <<'EOF'\nx=1\nEOF",
+            "git stash push -q && git checkout -b fix-cache refs/tags/v2-beta",
+            "git switch -c chore-deps refs/tags/v3-rc",   # synonym
+            "gcb docs-readme refs/tags/v4-final",          # user alias
+        ], aliases={"gcb": "git checkout -b"})
+        self.assertIn("git checkout -b <*> <*>", keys)
+        p = keys["git checkout -b <*> <*>"]
+        self.assertEqual((p["count"], p["variants"]), (4, 4))
+
+    def test_differing_flags_are_not_merged(self):
+        self.assertEqual(self._keys(["git log --oneline -n main", "git log --stat -n dev"]), {})
+
+    def test_bare_tool_with_argument_is_not_a_habit(self):
+        self.assertEqual(self._keys(["grep -i foo", "grep -i bar", "grep -i baz"]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

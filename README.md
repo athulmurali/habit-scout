@@ -25,6 +25,19 @@ flowchart LR
 - **mine**: normalizes commands (`git commit -m <str>`, `cd <path>`), counts repeated commands,
   2–4 step command chains per session, clusters near-duplicate prompts, and spots repeatedly
   created files of the same shape (template candidates). Zero tokens.
+  It also finds **command templates**: the same action written differently each time. Chains are
+  split into steps, your aliases are expanded, equivalent commands are unified (`git switch -c` →
+  `git checkout -b`), and steps that share a shape are aligned so the varying parts become slots:
+
+  ```
+  git checkout -q -b feature-login-form refs/tags/v1.4.0
+  git checkout -b fix-cache-timeout refs/tags/v1.5.2        ─►  git checkout -b <*> <*>
+  git switch -c chore-bump-deps refs/tags/v1.6.0                (seen 20x over 5 days)
+  ```
+
+  Flags must match exactly, so different operations are never merged. The LLM sees sample slot
+  values and the steps that usually run alongside, so it can propose one parameterized script for
+  the whole workflow.
 - **gate** (the "wisdom" part):
   - must recur on ≥3 distinct days, ≥4 times, and cost ≥2 minutes in the 14-day window
   - skipped if one of your existing aliases already covers it
@@ -95,12 +108,13 @@ unknown keys are reported, and `scout config` prints the effective result.
 | Group | Keys | Controls |
 |---|---|---|
 | schedule | `run_after_hour`, `notify` | when the daily run happens; macOS notification |
-| thresholds | `window_days`, `min_days`, `min_count`, `min_minutes`, `recent_days`, `session_gap_min`, `max_candidates`, `max_pending` | what counts as a habit worth automating |
+| thresholds | `window_days`, `min_days`, `min_count`, `min_minutes`, `recent_days`, `session_gap_min`, `template_similarity`, `max_candidates`, `max_pending` | what counts as a habit worth automating |
 | memory | `ignore_after_days`, `ignored_cooldown_days`, `passed_cooldown_days`, `retention_days` | how long decisions and raw events are remembered |
 | LLM | `claude_bin`, `model`, `max_suggestions`, `min_confidence`, `digest_char_budget`, `llm_timeout_sec`, `environment` | the single `claude -p` call |
 | `sources` | `zsh_history`, `shell_log`, `vscode_user`, `claude_projects` | where events are read from; `null` disables one |
 | `install` | `scripts_dir`, `claude_commands_dir` | where `scout accept` puts scripts and slash commands |
 | filters | `alias_files`, `trivial_commands`, `ignore_path_parts` | what is never suggested |
+| matching | `command_synonyms`, `noise_flags` | which commands count as the same action |
 
 Two settings are environment variables because they are needed before the config is read:
 `HABIT_SCOUT_HOME` (data directory, default `~/.habit-scout`) and `CLAUDE_BIN` (used by `install.sh`).
