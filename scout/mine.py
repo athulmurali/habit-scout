@@ -87,12 +87,12 @@ def _commands(rows, trivial):
     return out
 
 
-def _sessions(rows):
+def _sessions(rows, gap=SESSION_GAP):
     """Split a time-sorted stream into sessions (by explicit session id or idle gap)."""
     sess, cur, last, last_id = [], [], None, object()
     for r in rows:
         sid = r["session"]
-        if cur and ((sid or None) != (last_id or None) or r["ts"] - last > SESSION_GAP):
+        if cur and ((sid or None) != (last_id or None) or r["ts"] - last > gap):
             sess.append(cur)
             cur = []
         cur.append(r)
@@ -102,11 +102,11 @@ def _sessions(rows):
     return sess
 
 
-def _sequences(rows, trivial):
+def _sequences(rows, trivial, gap=SESSION_GAP):
     grams = defaultdict(list)
     for kind in ("shell", "agent_shell"):
         stream = [r for r in rows if r["kind"] == kind]
-        for s in _sessions(stream):
+        for s in _sessions(stream, gap):
             seq = []
             for r in s:
                 n = norm_cmd(r["text"])
@@ -226,7 +226,8 @@ def mine(db, cfg) -> list:
     rows = db.execute("SELECT * FROM events WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
     trivial = set(cfg["trivial_commands"])
     shellish = [r for r in rows if r["kind"] in ("shell", "agent_shell")]
-    patterns = (_commands(shellish, trivial) + _sequences(shellish, trivial) +
+    gap = cfg["session_gap_min"] * 60
+    patterns = (_commands(shellish, trivial) + _sequences(shellish, trivial, gap) +
                 _prompts(rows) + _slash(rows) + _new_files(rows, set(cfg["ignore_path_parts"])))
     now = int(time.time())
     db.execute("DELETE FROM patterns")

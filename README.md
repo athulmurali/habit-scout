@@ -39,6 +39,15 @@ flowchart LR
 
 Secrets (tokens, keys, URL creds, emails, long blobs) are redacted before anything is sent.
 
+## Requirements
+
+macOS (launchd, notifications), zsh, the system `python3` (standard library only), and the
+[Claude Code](https://claude.com/claude-code) CLI logged in; each LLM call bills that account.
+VS Code is optional: without it, disable `sources.vscode_user`.
+
+Privacy: it reads your shell history and Claude Code session logs locally; only redacted pattern
+summaries go to Claude. Use `scout run --dry-run` to see exactly what would be sent.
+
 ## Install
 
 ```sh
@@ -69,11 +78,32 @@ Daily reports: `~/.habit-scout/reports/YYYY-MM-DD.md`. Logs: `~/.habit-scout/log
 
 ## Config
 
-`~/.habit-scout/config.json` overrides any key in `scout/config.py`, e.g.
+Every setting is declared, with a comment, in `DEFAULTS` in [`scout/config.py`](scout/config.py).
+To change one, put just that key in `~/.habit-scout/config.json`. Nested groups merge key by key,
+unknown keys are reported, and `scout config` prints the effective result.
 
 ```json
-{ "model": "haiku", "min_days": 4, "run_after_hour": 20 }
+{
+  "model": "haiku",
+  "run_after_hour": 20,
+  "min_days": 4,
+  "sources": { "vscode_user": null },
+  "install": { "scripts_dir": "~/bin" }
+}
 ```
+
+| Group | Keys | Controls |
+|---|---|---|
+| schedule | `run_after_hour`, `notify` | when the daily run happens; macOS notification |
+| thresholds | `window_days`, `min_days`, `min_count`, `min_minutes`, `recent_days`, `session_gap_min`, `max_candidates`, `max_pending` | what counts as a habit worth automating |
+| memory | `ignore_after_days`, `ignored_cooldown_days`, `passed_cooldown_days`, `retention_days` | how long decisions and raw events are remembered |
+| LLM | `claude_bin`, `model`, `max_suggestions`, `min_confidence`, `digest_char_budget`, `llm_timeout_sec`, `environment` | the single `claude -p` call |
+| `sources` | `zsh_history`, `shell_log`, `vscode_user`, `claude_projects` | where events are read from; `null` disables one |
+| `install` | `scripts_dir`, `claude_commands_dir` | where `scout accept` puts scripts and slash commands |
+| filters | `alias_files`, `trivial_commands`, `ignore_path_parts` | what is never suggested |
+
+Two settings are environment variables because they are needed before the config is read:
+`HABIT_SCOUT_HOME` (data directory, default `~/.habit-scout`) and `CLAUDE_BIN` (used by `install.sh`).
 
 ## Tests
 

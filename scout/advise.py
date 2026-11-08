@@ -77,7 +77,7 @@ def _words(s):
     return set(re.findall(r"[a-z0-9]{3,}", s.lower()))
 
 
-def _suppressed(db, p):
+def _suppressed(db, cfg, p):
     """True if this pattern (or one very like it) was already handled."""
     rows = db.execute("SELECT fp, pattern_key, status, status_ts FROM suggestions").fetchall()
     now = int(time.time())
@@ -90,9 +90,9 @@ def _suppressed(db, p):
             continue
         if r["status"] in ("proposed", "accepted", "rejected"):
             return True
-        if r["status"] == "ignored" and now - (r["status_ts"] or 0) < 45 * 86400:
+        if r["status"] == "ignored" and now - (r["status_ts"] or 0) < cfg["ignored_cooldown_days"] * 86400:
             return True
-        if r["status"] == "passed" and now - (r["status_ts"] or 0) < 21 * 86400:
+        if r["status"] == "passed" and now - (r["status_ts"] or 0) < cfg["passed_cooldown_days"] * 86400:
             return True  # the LLM already judged it not worth it recently
     return False
 
@@ -125,7 +125,7 @@ def _covered_by_alias(p, aliases):
 
 def select_candidates(db, cfg, patterns):
     aliases = existing_aliases(cfg)
-    recent = int(time.time()) - 4 * 86400
+    recent = int(time.time()) - cfg["recent_days"] * 86400
     cands, notes = [], Counter()
     for p in patterns:
         if p["type"] == "slash":
@@ -139,7 +139,7 @@ def select_candidates(db, cfg, patterns):
         if _covered_by_alias(p, aliases):
             notes["already aliased"] += 1
             continue
-        if _suppressed(db, p):
+        if _suppressed(db, cfg, p):
             notes["already suggested/decided"] += 1
             continue
         # still a live habit? favour patterns seen in the last few days
@@ -167,12 +167,12 @@ def _history_summary(db):
     return [{k: r[k] for k in ("title", "kind", "status", "reason") if r[k]} for r in rows]
 
 
-def _profile(db, patterns):
+def _profile(db, cfg, patterns):
     slash = sorted((p for p in patterns if p["type"] == "slash"), key=lambda p: -p["count"])[:5]
     ws = db.execute("SELECT cwd, COUNT(*) c FROM events WHERE kind IN ('workspace','edit') AND ts >= ? "
-                    "GROUP BY cwd ORDER BY c DESC LIMIT 5", (int(time.time()) - 14 * 86400,)).fetchall()
+                    "GROUP BY cwd ORDER BY c DESC LIMIT 5", (int(time.time()) - cfg["window_days"] * 86400,)).fetchall()
     return {
-        "platform": "macOS, zsh, VS Code, Claude Code CLI",
+        "platform": cfg["environment"],
         "active_workspaces": [Path(r["cwd"]).name for r in ws if r["cwd"]],
         "slash_commands_already_used": [f'{p["key"]} (x{p["count"]})' for p in slash],
     }
@@ -181,7 +181,7 @@ def _profile(db, patterns):
 def build_digest(db, cfg, cands, patterns):
     slim = [{k: p[k] for k in ("fp", "type", "key", "count", "days", "minutes", "examples", "via", "steps", "workspace")
              if k in p} for p in cands]
-    digest = {"profile": _profile(db, patterns), "past_decisions": _history_summary(db), "candidates": slim}
+    digest = {"profile": _profile(db, cfg, patterns), "past_decisions": _history_summary(db), "candidates": slim}
     text = json.dumps(digest, separators=(",", ":"), ensure_ascii=False)
     while len(text) > cfg["digest_char_budget"] and digest["candidates"]:
         digest["candidates"].pop()

@@ -183,13 +183,14 @@ def collect_all(db, cfg) -> int:
     src = cfg["sources"]
     added = 0
     # hook log first so its richer rows (cwd, exit code) win the UNIQUE(kind, ts, text) dedupe
-    for gen in (
-        shell_log(db, src["shell_log"], since),
-        zsh_history(db, src["zsh_history"], since),
-        claude_sessions(db, src["claude_projects"], since),
-        vscode(db, src["vscode_user"], since),
+    for name, reader in (
+        ("shell_log", shell_log),
+        ("zsh_history", zsh_history),
+        ("claude_projects", claude_sessions),
+        ("vscode_user", vscode),
     ):
-        added += store.add_events(db, gen)
+        if src.get(name):  # null / missing = disabled
+            added += store.add_events(db, reader(db, src[name], since))
     store.prune(db, cfg["retention_days"])
     db.commit()
     return added

@@ -7,6 +7,7 @@
   scout accept ID [-y]                          install it
   scout reject ID [-r REASON]                   never suggest this again (reason teaches the agent)
   scout status                                  runs, token spend, adoption of accepted items
+  scout config                                  print the effective configuration
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import advise, collect, config, mine, store
-from .config import DATA_DIR, HOME
+from .config import CONFIG_FILE, DATA_DIR
 
 
 def _log(msg):
@@ -75,18 +76,18 @@ def cmd_run(args, cfg, db):
             _log(run["note"])
             if not args.force:
                 db.commit()
-                return _write_report(db, run, cands, new_ids)
+                return _write_report(db, cfg, run, cands, new_ids)
     if not args.dry_run:
         db.execute("INSERT OR REPLACE INTO runs VALUES(:day,:started,:events_added,:candidates,:llm_called,"
                    ":suggestions,:cost_usd,:input_tokens,:output_tokens,:note)", run)
         db.commit()
-    path = _write_report(db, run, cands, new_ids)
+    path = _write_report(db, cfg, run, cands, new_ids)
     _log(f"report: {path}")
     if new_ids and cfg["notify"] and not args.dry_run:
         _notify("habit-scout", f"{len(new_ids)} new automation idea(s). Run: scout list")
 
 
-def _write_report(db, run, cands, new_ids):
+def _write_report(db, cfg, run, cands, new_ids):
     out = DATA_DIR / "reports"
     out.mkdir(parents=True, exist_ok=True)
     lines = [f"# habit-scout — {run['day']}", "",
@@ -106,7 +107,7 @@ def _write_report(db, run, cands, new_ids):
         lines += ["## Considered but not recommended", ""]
         lines += [f"- `{c['key'][:90]}` ({c['count']}x/{c['days']}d): {c['llm_skip_reason']}" for c in passed]
         lines.append("")
-    lines += ["Respond with `scout accept ID`, `scout reject ID -r \"why\"`, or ignore (expires in 14 days)."]
+    lines += [f"Respond with `scout accept ID`, `scout reject ID -r \"why\"`, or ignore (expires in {cfg['ignore_after_days']} days)."]
     path = out / f"{run['day'].replace(':', '')}.md"
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -147,7 +148,7 @@ def cmd_show(args, cfg, db):
     print(f"\n--- {r['path']} ---\n{Path(r['path']).read_text()}")
 
 
-def _install(r):
+def _install(r, cfg):
     src = Path(r["path"])
     kind = r["kind"]
     if kind in ("alias", "function"):
@@ -156,7 +157,7 @@ def _install(r):
             f.write(f"\n# habit-scout #{r['id']}: {r['title']}\n{src.read_text()}")
         return f"appended to {dest} (open a new terminal or `source {dest}`)"
     if kind == "script":
-        dest = HOME / ".local/bin" / src.name
+        dest = Path(cfg["install"]["scripts_dir"]) / src.name
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             sys.exit(f"{dest} already exists; not overwriting")
@@ -164,7 +165,7 @@ def _install(r):
         dest.chmod(0o755)
         return f"installed {dest}"
     if kind == "claude_command":
-        dest = HOME / ".claude/commands" / src.name
+        dest = Path(cfg["install"]["claude_commands_dir"]) / src.name
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             sys.exit(f"{dest} already exists; not overwriting")
@@ -179,7 +180,7 @@ def cmd_accept(args, cfg, db):
         cmd_show(args, cfg, db)
         if input("\ninstall this? [y/N] ").strip().lower() != "y":
             return print("cancelled")
-    print(_install(r))
+    print(_install(r, cfg))
     db.execute("UPDATE suggestions SET status='accepted', status_ts=? WHERE id=?", (int(time.time()), r["id"]))
     db.commit()
 
@@ -209,6 +210,12 @@ def cmd_status(args, cfg, db):
         print(f"  #{r['id']} {r['title']}: manual rate {r['baseline_per_day']:.1f}/day -> {now_rate:.1f}/day")
 
 
+def cmd_config(args, cfg, db):
+    src = CONFIG_FILE if CONFIG_FILE.exists() else f"defaults only (create {CONFIG_FILE} to override)"
+    print(f"# {src}")
+    print(json.dumps(cfg, indent=2))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="scout", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -228,6 +235,7 @@ def main(argv=None):
         if name == "reject":
             p.add_argument("-r", "--reason", default="")
     sub.add_parser("status")
+    sub.add_parser("config")
     args = ap.parse_args(argv)
     cfg = config.load()
     db = store.connect()
