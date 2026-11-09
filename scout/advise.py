@@ -26,7 +26,9 @@ Principles:
 - type=template means the same command shape recurring with different arguments: <*> marks a
   varying slot, `slots` lists sample values per slot, `often_with` lists steps that usually run in
   the same command. These are the strongest script/function candidates: take the slots as
-  parameters and fold the often_with steps into the same automation.
+  parameters and fold the often_with steps into the same automation. When one automation replaces
+  several candidates, put the main one in `fp` and the rest in `also_covers`.
+- For every candidate you do not recommend, add it to `skipped` with a one-line reason.
 - Learn from history: never re-propose something resembling a rejected item; if the developer
   ignores or rejects a kind of suggestion, raise your bar for that kind.
 - Scripts must be safe and idempotent: `set -euo pipefail` for bash, no destructive actions
@@ -44,7 +46,9 @@ OUTPUT_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "fp": {"type": "string", "description": "fingerprint of the pattern addressed"},
+                    "fp": {"type": "string", "description": "fingerprint of the main pattern addressed"},
+                    "also_covers": {"type": "array", "items": {"type": "string"},
+                                    "description": "fingerprints of other candidates this automation also replaces"},
                     "title": {"type": "string"},
                     "why": {"type": "string", "description": "1-2 sentences citing the evidence"},
                     "kind": {"type": "string", "enum": ["alias", "function", "script", "vscode_task",
@@ -65,7 +69,7 @@ OUTPUT_SCHEMA = {
                       "required": ["fp", "reason"]},
         },
     },
-    "required": ["recommendations"],
+    "required": ["recommendations", "skipped"],
 }
 
 
@@ -189,6 +193,9 @@ def call_llm(cfg, digest_text):
     if proc.returncode != 0:
         raise RuntimeError(f"claude exited {proc.returncode}: {(proc.stderr or proc.stdout)[-500:]}")
     out = json.loads(proc.stdout)
+    log = DATA_DIR / "logs" / f"llm-{time.strftime('%Y-%m-%d-%H%M')}.json"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(proc.stdout)  # raw reply, for auditing what the model said
     data = out.get("structured_output")
     if data is None:
         m = re.search(r"\{.*\}", out.get("result", ""), re.S)
@@ -211,8 +218,20 @@ def _slug(s):
 
 def save_suggestions(db, cfg, data, cands):
     by_fp = {p["fp"]: p for p in cands}
-    recs = [r for r in data.get("recommendations", [])
-            if r.get("fp") in by_fp and r.get("confidence", 0) >= cfg["min_confidence"] and r.get("content")]
+    recs, low = [], {}
+    for r in data.get("recommendations", []):
+        # tolerate "fp1, fp2" or a fingerprint the model only listed under also_covers
+        fps = [f for f in re.findall(r"[0-9a-f]{10}", " ".join([r.get("fp", "")] + list(r.get("also_covers") or [])))
+               if f in by_fp]
+        if not fps or not r.get("content"):
+            continue
+        if r.get("confidence", 0) < cfg["min_confidence"]:
+            for f in fps:  # say why it was dropped instead of a bare "not recommended"
+                low.setdefault(f, f"proposed \"{r.get('title', '')}\" at confidence {r.get('confidence')}, "
+                                  f"below min_confidence {cfg['min_confidence']}")
+            continue
+        r["fp"], r["covers"] = fps[0], fps
+        recs.append(r)
     recs.sort(key=lambda r: -(r.get("minutes_per_week", 0) * r.get("confidence", 0)))
     saved = []
     for r in recs[: cfg["max_suggestions"]]:
@@ -238,12 +257,12 @@ def save_suggestions(db, cfg, data, cands):
         saved.append(sid)
     db.commit()
     reasons = {s.get("fp"): s.get("reason") for s in data.get("skipped", []) or []}
-    addressed = {r["fp"] for r in recs[: cfg["max_suggestions"]]}
+    addressed = {f for r in recs[: cfg["max_suggestions"]] for f in r["covers"]}
     now = int(time.time())
     for fp, p in by_fp.items():
         if fp in addressed:
             continue
-        p["llm_skip_reason"] = reasons.get(fp, "not recommended")
+        p["llm_skip_reason"] = reasons.get(fp) or low.get(fp) or "not recommended"
         # remember the verdict so the same pattern is not re-sent (and re-billed) tomorrow
         db.execute("INSERT INTO suggestions(fp, pattern_key, created, title, status, status_ts, reason) "
                    "VALUES(?,?,?,?, 'passed', ?, ?)", (fp, p["key"], now, p["key"][:80], now, p["llm_skip_reason"]))
