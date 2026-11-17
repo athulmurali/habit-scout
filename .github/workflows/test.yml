@@ -1,0 +1,17 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (stdlib only)
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: |
+          bash -n install.sh uninstall.sh
+          zsh -n shell/habit-scout.zsh
+          plutil -lint launchd/com.habit-scout.daily.plist
