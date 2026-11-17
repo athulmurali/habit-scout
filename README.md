@@ -32,7 +32,7 @@ habit-scout works the other way around:
   hasn't been seen before. On most days it doesn't run at all.
 - **Learns your taste.** Accept and reject decisions, and the reasons you give, go into the next
   prompt, so it gets pickier about the kinds of things you turn down.
-- **Cheap.** In real use: 26 daily runs, 7 LLM calls, **$0.13 total**.
+- **Light on tokens.** Almost 4 weeks of daily use: 7 LLM calls, **~25k tokens total** (~1k/day).
 
 ## How it works
 
